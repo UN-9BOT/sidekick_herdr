@@ -94,22 +94,39 @@ describe("sidekick_herdr.session.start", function()
     reload_herdr().setup()
   end)
 
-  it("builds herdr agent start command and clears HERDR env", function()
+  it("wraps herdr agent start in sh -c with stdout/stderr redirected", function()
     local s = make_session({ sid = "claude abcdef" })
     local ret = s:start()
-    assert.are.same({
-      "herdr", "agent", "start", "claude", "--cwd", "/tmp/proj", "--no-focus", "--", "claude",
-    }, ret.cmd)
+    -- Wrapped in sh -c "... >/dev/null 2>&1" to keep herdr's JSON status line
+    -- out of the sidekick terminal buffer.
+    assert.are.equal("sh", ret.cmd[1])
+    assert.are.equal("-c", ret.cmd[2])
+    local shell_cmd = ret.cmd[3]
+    assert.is_truthy(shell_cmd:find("herdr", 1, true) and shell_cmd:find("agent", 1, true) and shell_cmd:find("start", 1, true) and shell_cmd:find("claude", 1, true),
+      "shell cmd must contain herdr agent start claude: "..shell_cmd)
+    assert.is_truthy(shell_cmd:find("'--cwd'", 1, true),
+      "shell cmd must escape --cwd: "..shell_cmd)
+    assert.is_truthy(shell_cmd:find("--no-focus", 1, true) or shell_cmd:find("no-focus", 1, true),
+      "shell cmd must include --no-focus: "..shell_cmd)
+    assert.is_truthy(shell_cmd:find("'--'", 1, true),
+      "shell cmd must include -- terminator: "..shell_cmd)
+    assert.is_truthy(shell_cmd:find("claude", 1, true),
+      "shell cmd must include the tool argv: "..shell_cmd)
+    assert.is_truthy(shell_cmd:find(">/dev/null 2>&1", 1, true),
+      "shell cmd must redirect stdout/stderr to /dev/null: "..shell_cmd)
     assert.are.same({ HERDR = false, HERDR_CONFIG_PATH = false }, ret.env)
   end)
 
-  it("serialises additional tool cmd arguments", function()
+  it("serialises additional tool cmd arguments and shellescapes them", function()
     local s = make_session({ tool = make_tool("codex", { "codex", "--flag", "value" }), sid = "codex 1" })
     local ret = s:start()
-    assert.are.same({
-      "herdr", "agent", "start", "codex", "--cwd", "/tmp/proj", "--no-focus", "--",
-      "codex", "--flag", "value",
-    }, ret.cmd)
+    local shell_cmd = ret.cmd[3]
+    assert.is_truthy(shell_cmd:find("'--flag'", 1, true),
+      "shell cmd must shellescape --flag: "..shell_cmd)
+    assert.is_truthy(shell_cmd:find("'value'", 1, true),
+      "shell cmd must shellescape value: "..shell_cmd)
+    assert.is_falsy(shell_cmd:find("'%-%-flag'", 1, true),
+      "--flag must NOT be double-escaped: "..shell_cmd)
   end)
 end)
 
@@ -303,10 +320,20 @@ describe("sidekick_herdr._patch_select", function()
     package.loaded["sidekick.cli.ui.select"] = nil
   end)
 
-  it("appends ws/tab labels for herdr sessions and skips others", function()
+  it("rewrites [herdr:...] to include ws/tab inside brackets and drops cwd tail", function()
+    -- Mimic real sidekick format: tool name + [herdr:w123] + cwd tail.
     local fake = { format = function(state, _picker)
-      -- mimic minimal sidekick format: returns a table with tool name + cwd
-      return { { state.tool.name, "Normal" }, { " " }, { state.session and state.session.cwd or "", "Directory" } }
+      local s = state.session
+      local backend = s.mux_backend or s.backend
+      local mux = s.mux_session or ""
+      local tail = s.cwd or ""
+      return {
+        { state.tool.name, "Normal" },
+        { " " },
+        { "[" .. backend .. (mux ~= "" and (":" .. mux) or "") .. "]", "Special" },
+        { " " },
+        { tail, "Directory" },
+      }
     end }
     package.loaded["sidekick.cli.ui.select"] = fake
     local sh = require("sidekick_herdr")
@@ -314,7 +341,14 @@ describe("sidekick_herdr._patch_select", function()
 
     local herdr_state = {
       tool = { name = "claude" },
-      session = { backend = "herdr", cwd = "/tmp/c", herdr_workspace_label = "myrepo", herdr_tab_label = "build" },
+      session = {
+        backend = "herdr",
+        cwd = "/tmp/c",
+        mux_backend = "herdr",
+        mux_session = "w123",
+        herdr_workspace_label = "myrepo",
+        herdr_tab_label = "build",
+      },
     }
     local tmux_state = {
       tool = { name = "codex" },
@@ -323,18 +357,61 @@ describe("sidekick_herdr._patch_select", function()
     local out_herdr = fake.format(herdr_state)
     local out_tmux = fake.format(tmux_state)
 
-    local function has_label(out, needle)
+    local function find(out, predicate)
       for _, seg in ipairs(out) do
-        if type(seg[1]) == "string" and seg[1]:find(needle, 1, true) then
-          return true
+        if type(seg[1]) == "string" and predicate(seg[1]) then
+          return seg
         end
       end
-      return false
+    end
+    local function has_text(out, needle)
+      return find(out, function(s) return s:find(needle, 1, true) ~= nil end) ~= nil
     end
 
-    assert.is_true(has_label(out_herdr, "ws=myrepo"), "herdr output should contain ws label")
-    assert.is_true(has_label(out_herdr, "tab=build"), "herdr output should contain tab label")
-    assert.is_false(has_label(out_tmux, "ws="), "tmux output should not contain ws label")
+    local herdr_bracket = find(out_herdr, function(s) return s:match("^%[herdr:") ~= nil end)
+    assert.is_not_nil(herdr_bracket, "herdr output should still contain a [herdr:...] segment")
+    assert.are.equal("[herdr:myrepo:build]", herdr_bracket[1])
+
+    -- No standalone ws=/tab= segments anymore (they live inside the brackets)
+    assert.is_nil(find(out_herdr, function(s) return s:find("ws=", 1, true) ~= nil end),
+      "ws= must not appear as a separate segment")
+    assert.is_nil(find(out_herdr, function(s) return s:find("tab=", 1, true) ~= nil end),
+      "tab= must not appear as a separate segment")
+
+    -- cwd tail must be gone
+    assert.is_false(has_text(out_herdr, "/tmp/c"), "cwd tail must be dropped for herdr")
+
+    -- tmux is untouched
+    local tmux_bracket = find(out_tmux, function(s) return s:match("^%[tmux") ~= nil end)
+    assert.is_not_nil(tmux_bracket, "tmux output should keep its [tmux:...] segment")
+    assert.are.equal("[tmux:s1]", tmux_bracket[1])
+    assert.is_true(has_text(out_tmux, "/tmp/c"), "tmux cwd tail must be preserved")
+  end)
+
+  it("falls through unchanged for herdr sessions without ws/tab labels", function()
+    local fake = { format = function(state)
+      return { { state.tool.name, "Normal" }, { " " }, { "[herdr:w123]", "Special" }, { " " }, { "/tmp/c", "Directory" } }
+    end }
+    package.loaded["sidekick.cli.ui.select"] = fake
+    local sh = require("sidekick_herdr")
+    sh._patch_select()
+
+    local out = fake.format({
+      tool = { name = "claude" },
+      session = { backend = "herdr", cwd = "/tmp/c", mux_backend = "herdr", mux_session = "w123" },
+    })
+    -- No labels -> original format is returned, including cwd
+    assert.is_true((function()
+      for _, seg in ipairs(out) do
+        if type(seg[1]) == "string" and seg[1] == "/tmp/c" then return true end
+      end
+      return false
+    end)(), "cwd should be preserved when no ws/tab labels are available")
+    local bracket_found = false
+    for _, seg in ipairs(out) do
+      if type(seg[1]) == "string" and seg[1] == "[herdr:w123]" then bracket_found = true end
+    end
+    assert.is_true(bracket_found, "original [herdr:w123] segment should be preserved")
   end)
 
   it("is idempotent", function()

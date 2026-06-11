@@ -37,15 +37,37 @@ function M._patch_select()
   local original = Select.format
   ---@diagnostic disable-next-line: duplicate-set-field
   Select.format = function(state, picker)
-    local ret = original(state, picker)
     local session = state and state.session
-    if session and session.backend == "herdr" then
-      local ws = session.herdr_workspace_label
-      local tab = session.herdr_tab_label
-      if ws or tab then
-        local label = string.format("  ws=%s tab=%s", tostring(ws or "?"), tostring(tab or "?"))
-        ret[#ret + 1] = { label, "Comment" }
+    if not (session and session.backend == "herdr") then
+      return original(state, picker)
+    end
+    -- For herdr sessions we rebuild the [backend:ws:tab] segment ourselves
+    -- so the workspace and tab labels sit *inside* the brackets, not at the
+    -- tail of the line, and we drop the trailing cwd (it is implied by
+    -- the workspace label and would just push the row off-screen).
+    local ws = session.herdr_workspace_label
+    local tab = session.herdr_tab_label
+    if not (ws or tab) then
+      return original(state, picker)
+    end
+    local ret = original(state, picker)
+    -- Find the existing [herdr:...] segment ("Special" highlight) and replace
+    -- its text with [herdr:ws:tab]. Drop every segment after it (cwd, picker
+    -- filename) because it adds noise the user does not need in this view.
+    local backend_idx
+    for i, seg in ipairs(ret) do
+      if type(seg[1]) == "string" and seg[1]:match("^%[herdr[^%]]*%]") then
+        backend_idx = i
+        break
       end
+    end
+    if not backend_idx then
+      return ret
+    end
+    local inner = string.format("%s:%s:%s", "herdr", tostring(ws or "?"), tostring(tab or "?"))
+    ret[backend_idx] = { "[" .. inner .. "]", "Special" }
+    for i = #ret, backend_idx + 1, -1 do
+      ret[i] = nil
     end
     return ret
   end

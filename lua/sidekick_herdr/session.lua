@@ -34,12 +34,20 @@ end
 
 ---@return sidekick.cli.terminal.Cmd?
 function M:start()
-  local cmd = { "herdr", "agent", "start", self.tool.name, "--cwd", self.cwd, "--no-focus", "--" }
+  -- herdr agent start writes a JSON status line to stdout, which would land
+  -- in sidekick's terminal buffer as visible garbage. Wrap the call in
+  -- `sh -c` and redirect stdout+stderr to /dev/null so the terminal only
+  -- ever shows the tool's own output.
+  local args = { "herdr", "agent", "start", self.tool.name, "--cwd", self.cwd, "--no-focus", "--" }
   for _, c in ipairs(self.tool.cmd) do
-    cmd[#cmd + 1] = c
+    args[#args + 1] = c
+  end
+  local quoted = {} ---@type string[]
+  for _, a in ipairs(args) do
+    quoted[#quoted + 1] = vim.fn.shellescape(a)
   end
   return {
-    cmd = cmd,
+    cmd = { "sh", "-c", table.concat(quoted, " ") .. " >/dev/null 2>&1" },
     env = vim.tbl_extend("force", {
       HERDR = false,
       HERDR_CONFIG_PATH = false,
