@@ -62,7 +62,7 @@ local SidekickSession = require("sidekick.cli.session")
 local all = SidekickSession.sessions()
 local target
 for _, s in ipairs(all) do
-  if s.id == ("herdr " .. r[1].id:gsub("^herdr ", "")) then target = s end
+  if s.id == r[1].id then target = s end
 end
 assert(target, "could not find herdr session in SidekickSession.sessions()")
 local state = { tool = target.tool, session = target }

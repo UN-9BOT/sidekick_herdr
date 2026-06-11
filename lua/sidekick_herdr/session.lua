@@ -213,6 +213,7 @@ end
 ---@return sidekick.cli.session.State[]
 function M.sessions()
   local Config = require("sidekick.config")
+  local Session = require("sidekick.cli.session")
   local decoded = json({ "herdr", "agent", "list" }, { notify = false })
   if type(decoded) ~= "table" then
     return {}
@@ -226,9 +227,16 @@ function M.sessions()
     local tool = tools[name]
     if tool then
       local cwd = a.foreground_cwd or a.cwd
+      -- Use the same sid that Session.new({tool=name, cwd=cwd}) would
+      -- produce. This is critical: sidekick stores `M._attached[session.id]`
+      -- and prunes entries whose id does not show up in `backend:sessions()`.
+      -- If we returned a different id (e.g. "herdr <pane_id>") the
+      -- attach entry would be wiped on the next discovery pass and the
+      -- next `send` would re-open the picker.
+      local sid = Session.sid({ tool = name, cwd = cwd })
       ---@type sidekick.cli.session.State
       local state = {
-        id = "herdr " .. a.pane_id,
+        id = sid,
         cwd = cwd,
         tool = tool,
         backend = "herdr",
@@ -236,6 +244,7 @@ function M.sessions()
         mux_session = a.workspace_id,
         pids = {},
         -- herdr-specific labels surfaced in the UI
+        herdr_pane_id = a.pane_id,
         herdr_workspace_id = a.workspace_id,
         herdr_workspace_label = a.workspace_id and ws_labels[a.workspace_id] or nil,
         herdr_tab_id = a.tab_id,

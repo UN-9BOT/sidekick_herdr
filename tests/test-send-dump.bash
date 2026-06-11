@@ -35,7 +35,7 @@ local Session = require("sidekick.cli.session")
 local r = Backend.sessions()
 if #r ~= 1 then print("ERR: n="..#r); os.exit(1) end
 local sess = Session.new({ tool = r[1].tool, cwd = r[1].cwd, backend = "herdr", sid = r[1].id, id = r[1].id })
-sess.herdr_pane_id = r[1].id:gsub("^herdr ", "")
+sess.herdr_pane_id = r[1].herdr_pane_id
 sess.mux_session = r[1].mux_session
 sess.started = true
 sess:send("hello from test")

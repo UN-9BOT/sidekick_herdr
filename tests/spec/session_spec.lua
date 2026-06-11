@@ -94,39 +94,41 @@ describe("sidekick_herdr.session.start", function()
     reload_herdr().setup()
   end)
 
-  it("wraps herdr agent start in sh -c with stdout/stderr redirected", function()
+  it("start() returns nil and synchronously spawns herdr agent", function()
+    local spawned_with
     local s = make_session({ sid = "claude abcdef" })
+    s._spawn_agent = function(self) spawned_with = self.tool.name end
     local ret = s:start()
-    -- Wrapped in sh -c "... >/dev/null 2>&1" to keep herdr's JSON status line
-    -- out of the sidekick terminal buffer.
-    assert.are.equal("sh", ret.cmd[1])
-    assert.are.equal("-c", ret.cmd[2])
-    local shell_cmd = ret.cmd[3]
-    assert.is_truthy(shell_cmd:find("herdr", 1, true) and shell_cmd:find("agent", 1, true) and shell_cmd:find("start", 1, true) and shell_cmd:find("claude", 1, true),
-      "shell cmd must contain herdr agent start claude: "..shell_cmd)
-    assert.is_truthy(shell_cmd:find("'--cwd'", 1, true),
-      "shell cmd must escape --cwd: "..shell_cmd)
-    assert.is_truthy(shell_cmd:find("--no-focus", 1, true) or shell_cmd:find("no-focus", 1, true),
-      "shell cmd must include --no-focus: "..shell_cmd)
-    assert.is_truthy(shell_cmd:find("'--'", 1, true),
-      "shell cmd must include -- terminator: "..shell_cmd)
-    assert.is_truthy(shell_cmd:find("claude", 1, true),
-      "shell cmd must include the tool argv: "..shell_cmd)
-    assert.is_truthy(shell_cmd:find(">/dev/null 2>&1", 1, true),
-      "shell cmd must redirect stdout/stderr to /dev/null: "..shell_cmd)
-    assert.are.same({ HERDR = false, HERDR_CONFIG_PATH = false }, ret.env)
+    assert.is_nil(ret, "start() must return nil so sidekick does not open a terminal wrapper")
+    assert.are.equal("claude", spawned_with)
   end)
 
-  it("serialises additional tool cmd arguments and shellescapes them", function()
+  it("_spawn_agent builds herdr agent start with shellescaped args", function()
+    local captured_cmd, captured_env
+    local orig_system = vim.system
+    vim.system = function(cmd, opts)
+      captured_cmd = cmd
+      captured_env = opts and opts.env or nil
+      return { wait = function() return { code = 0, stderr = "" } end }
+    end
+    local orig_exec = Util.exec
+    Util.exec = function() return {}, "{}" end
     local s = make_session({ tool = make_tool("codex", { "codex", "--flag", "value" }), sid = "codex 1" })
-    local ret = s:start()
-    local shell_cmd = ret.cmd[3]
-    assert.is_truthy(shell_cmd:find("'--flag'", 1, true),
-      "shell cmd must shellescape --flag: "..shell_cmd)
-    assert.is_truthy(shell_cmd:find("'value'", 1, true),
-      "shell cmd must shellescape value: "..shell_cmd)
-    assert.is_falsy(shell_cmd:find("'%-%-flag'", 1, true),
-      "--flag must NOT be double-escaped: "..shell_cmd)
+    s:_spawn_agent()
+    vim.system = orig_system
+    Util.exec = orig_exec
+    assert.are.equal("sh", captured_cmd[1])
+    assert.are.equal("-c", captured_cmd[2])
+    local shell_cmd = captured_cmd[3]
+    assert.is_truthy(shell_cmd:find("herdr", 1, true), shell_cmd)
+    assert.is_truthy(shell_cmd:find("agent", 1, true), shell_cmd)
+    assert.is_truthy(shell_cmd:find("start", 1, true), shell_cmd)
+    assert.is_truthy(shell_cmd:find("codex", 1, true), shell_cmd)
+    assert.is_truthy(shell_cmd:find("flag", 1, true), shell_cmd)
+    assert.is_truthy(shell_cmd:find("value", 1, true), shell_cmd)
+    assert.is_truthy(shell_cmd:find(">/dev/null 2>&1", 1, true), shell_cmd)
+    assert.are.equal(false, captured_env.HERDR)
+    assert.are.equal(false, captured_env.HERDR_CONFIG_PATH)
   end)
 end)
 
@@ -304,7 +306,11 @@ describe("sidekick_herdr.session.sessions", function()
     local states = s.sessions()
     Util.exec = original_exec
     assert.are.equal(1, #states)
-    assert.are.equal("herdr p1", states[1].id)
+    -- id must equal the sidekick-style sid so M._attached lookup works
+    -- across M.sessions() discovery (otherwise sidekick detaches every cycle).
+    local Session = require("sidekick.cli.session")
+    assert.are.equal(Session.sid({ tool = "claude", cwd = "/tmp/c" }), states[1].id)
+    assert.are.equal("p1", states[1].herdr_pane_id)
     assert.are.equal("/tmp/c", states[1].cwd)
     assert.are.equal("w1", states[1].mux_session)
     assert.are.equal("claude", states[1].tool.name)
@@ -439,5 +445,74 @@ describe("sidekick_herdr._patch_select", function()
     sh._patch_select()
     -- After 3 calls, still exactly one wrap layer: the second call sees _herdr_patched flag and returns.
     assert.is_true(fake._herdr_patched)
+  end)
+end)
+
+describe("sidekick_herdr.session attach stability", function()
+  before_each(function()
+    scrub_herdr_env()
+    vim.fn.executable = function(_) return 1 end
+    Util = require("sidekick.util")
+    Config = require("sidekick.config")
+    reset_session_backend()
+    reload_herdr().setup()
+    Config.cli.tools = Config.cli.tools or {}
+    Config.cli.tools.claude = { cmd = { "claude" } }
+  end)
+
+  it("state id returned by sessions() equals the sid used by Session.attach()", function()
+    -- Stub herdr CLI to return one agent
+    local Util0 = Util
+    local agent_json = vim.json.encode({
+      result = { agents = { { agent = "claude", pane_id = "p1", workspace_id = "w1", tab_id = "w1:1", foreground_cwd = "/tmp/c" } } },
+    })
+    local ws_json = vim.json.encode({ result = { workspaces = { { workspace_id = "w1", label = "myrepo" } } } })
+    local tab_json = vim.json.encode({ result = { tabs = { { tab_id = "w1:1", label = "build" } } } })
+    local stubbed = {}
+    local restore = stub_exec(function(cmd)
+      stubbed[#stubbed + 1] = cmd
+      if cmd[2] == "agent" and cmd[3] == "list" then return { agent_json } end
+      if cmd[2] == "workspace" and cmd[3] == "list" then return { ws_json } end
+      if cmd[2] == "tab" and cmd[3] == "list" then return { tab_json } end
+      return {}
+    end)
+    local s = require("sidekick_herdr.session")
+    s._reset_label_cache()
+    local SidekickSession = require("sidekick.cli.session")
+    local states = s.sessions()
+    restore()
+    -- The id must match what SidekickSession.new({tool="claude",cwd="/tmp/c"}) produces.
+    local sid = SidekickSession.sid({ tool = "claude", cwd = "/tmp/c" })
+    assert.are.equal(sid, states[1].id)
+    -- Simulate sidekick: when it wraps sessions() in Session.new(), the id is
+    -- preserved (Session.new only sets self.id = self.id or self.sid, but here
+    -- self.id is already set to sid). The important bit: M._attached[sid] stays
+    -- stable across discovery cycles.
+  end)
+
+  it("attached session survives a sessions() discovery cycle", function()
+    -- The crucial integration check: after `M._attached[sid] = session`,
+    -- a subsequent sessions() discovery must include the same id so the
+    -- prune loop in sidekick.cli.session.sessions() does not detach us.
+    local SidekickSession = require("sidekick.cli.session")
+    local agent_json = vim.json.encode({
+      result = { agents = { { agent = "claude", pane_id = "p1", workspace_id = "w1", tab_id = "w1:1", foreground_cwd = "/tmp/proj" } } },
+    })
+    local restore = stub_exec(function(cmd)
+      if cmd[2] == "agent" and cmd[3] == "list" then return { agent_json } end
+      return { "[]" }
+    end)
+    local s = require("sidekick_herdr.session")
+    s._reset_label_cache()
+    local fake_session = SidekickSession.new({ tool = "claude", cwd = "/tmp/proj", backend = "herdr" })
+    fake_session.herdr_pane_id = "p1"
+    SidekickSession.attach(fake_session)
+    -- Now sidekick runs the discovery pass...
+    local _ = SidekickSession.sessions()
+    restore()
+    -- ...and the attach entry must still be there.
+    local sid = fake_session.id
+    assert.is_not_nil(SidekickSession._attached[sid],
+      "attached session was pruned because sessions() id did not match attach id")
   end)
 end)
