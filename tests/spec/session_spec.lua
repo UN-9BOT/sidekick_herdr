@@ -181,6 +181,16 @@ describe("sidekick_herdr.session.submit", function()
     s:submit()
     assert.are.same({ "herdr", "pane", "send-keys", "p1", "Enter" }, calls[1].cmd)
   end)
+
+  it("does not invoke herdr pane send-keys when herdr_pane_id is missing", function()
+    local calls = {}
+    local orig_exec = Util.exec
+    Util.exec = function(cmd, opts) calls[#calls + 1] = cmd end
+    local s = make_session({ sid = "claude 1" })
+    s:submit()
+    Util.exec = orig_exec
+    assert.are.equal(0, #calls, "herdr pane send-keys must not be called without pane id")
+  end)
 end)
 
 describe("sidekick_herdr.session.is_running", function()

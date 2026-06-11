@@ -89,7 +89,21 @@ function M:is_running()
   return lines ~= nil
 end
 
+function M:_guard_pane(op)
+  if not self.herdr_pane_id or self.herdr_pane_id == "" then
+    local ok, Util = pcall(require, "sidekick.util")
+    if ok then
+      Util.warn(("sidekick_herdr: %s called before herdr_pane_id is known; " ..
+        "the session was never started or the pane disappeared. " ..
+        "Run SidekickCliAttach/Start to (re)attach."):format(op))
+    end
+    return false
+  end
+  return true
+end
+
 function M:send(text)
+  if not self:_guard_pane("send") then return end
   local function send()
     exec({ "herdr", "pane", "send-text", self.herdr_pane_id, text }, { notify = true })
   end
@@ -102,6 +116,7 @@ function M:send(text)
 end
 
 function M:submit()
+  if not self:_guard_pane("submit") then return end
   exec({ "herdr", "pane", "send-keys", self.herdr_pane_id, "Enter" }, { notify = true })
 end
 
