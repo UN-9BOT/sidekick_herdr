@@ -250,19 +250,35 @@ describe("sidekick_herdr.session.sessions", function()
     local payload = vim.json.encode({
       result = {
         agents = {
-          { agent = "claude", pane_id = "p1", workspace_id = "w1", foreground_cwd = "/tmp/c" },
+          { agent = "claude", pane_id = "p1", workspace_id = "w1", tab_id = "w1:1", foreground_cwd = "/tmp/c" },
           { agent = "vim", pane_id = "p2", workspace_id = "w1", foreground_cwd = "/tmp/v" },
         },
       },
     })
     restore = stub_exec(function() return { payload } end)
     local s = require("sidekick_herdr.session")
+    s._reset_label_cache()
+    -- Stub workspace list and tab list returns
+    local original_exec = Util.exec
+    Util.exec = function(cmd, opts)
+      if cmd[2] == "workspace" and cmd[3] == "list" then
+        return { vim.json.encode({ result = { workspaces = { { workspace_id = "w1", label = "myrepo" } } } }) }
+      elseif cmd[2] == "tab" and cmd[3] == "list" then
+        return { vim.json.encode({ result = { tabs = { { tab_id = "w1:1", label = "build" } } } }) }
+      end
+      return original_exec(cmd, opts)
+    end
     local states = s.sessions()
+    Util.exec = original_exec
     assert.are.equal(1, #states)
     assert.are.equal("herdr p1", states[1].id)
     assert.are.equal("/tmp/c", states[1].cwd)
     assert.are.equal("w1", states[1].mux_session)
     assert.are.equal("claude", states[1].tool.name)
+    assert.are.equal("w1", states[1].herdr_workspace_id)
+    assert.are.equal("myrepo", states[1].herdr_workspace_label)
+    assert.are.equal("w1:1", states[1].herdr_tab_id)
+    assert.are.equal("build", states[1].herdr_tab_label)
   end)
 
   it("falls back to cwd when foreground_cwd is missing", function()
@@ -277,5 +293,58 @@ describe("sidekick_herdr.session.sessions", function()
     local s = require("sidekick_herdr.session")
     local states = s.sessions()
     assert.are.equal("/tmp/c", states[1].cwd)
+  end)
+end)
+
+describe("sidekick_herdr._patch_select", function()
+  before_each(function()
+    package.loaded["sidekick_herdr"] = nil
+    package.loaded["sidekick_herdr.session"] = nil
+    package.loaded["sidekick.cli.ui.select"] = nil
+  end)
+
+  it("appends ws/tab labels for herdr sessions and skips others", function()
+    local fake = { format = function(state, _picker)
+      -- mimic minimal sidekick format: returns a table with tool name + cwd
+      return { { state.tool.name, "Normal" }, { " " }, { state.session and state.session.cwd or "", "Directory" } }
+    end }
+    package.loaded["sidekick.cli.ui.select"] = fake
+    local sh = require("sidekick_herdr")
+    sh._patch_select()
+
+    local herdr_state = {
+      tool = { name = "claude" },
+      session = { backend = "herdr", cwd = "/tmp/c", herdr_workspace_label = "myrepo", herdr_tab_label = "build" },
+    }
+    local tmux_state = {
+      tool = { name = "codex" },
+      session = { backend = "tmux", cwd = "/tmp/c", mux_session = "s1" },
+    }
+    local out_herdr = fake.format(herdr_state)
+    local out_tmux = fake.format(tmux_state)
+
+    local function has_label(out, needle)
+      for _, seg in ipairs(out) do
+        if type(seg[1]) == "string" and seg[1]:find(needle, 1, true) then
+          return true
+        end
+      end
+      return false
+    end
+
+    assert.is_true(has_label(out_herdr, "ws=myrepo"), "herdr output should contain ws label")
+    assert.is_true(has_label(out_herdr, "tab=build"), "herdr output should contain tab label")
+    assert.is_false(has_label(out_tmux, "ws="), "tmux output should not contain ws label")
+  end)
+
+  it("is idempotent", function()
+    local fake = { format = function() return {} end }
+    package.loaded["sidekick.cli.ui.select"] = fake
+    local sh = require("sidekick_herdr")
+    sh._patch_select()
+    sh._patch_select()
+    sh._patch_select()
+    -- After 3 calls, still exactly one wrap layer: the second call sees _herdr_patched flag and returns.
+    assert.is_true(fake._herdr_patched)
   end)
 end)

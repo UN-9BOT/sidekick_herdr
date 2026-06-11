@@ -27,6 +27,31 @@ function M.env()
   return e
 end
 
+---Monkey-patch sidekick.cli.ui.select.format to append herdr workspace/tab labels
+---for sessions whose backend is `herdr`. Idempotent.
+function M._patch_select()
+  local ok, Select = pcall(require, "sidekick.cli.ui.select")
+  if not ok or not Select or not Select.format or Select._herdr_patched then
+    return
+  end
+  local original = Select.format
+  ---@diagnostic disable-next-line: duplicate-set-field
+  Select.format = function(state, picker)
+    local ret = original(state, picker)
+    local session = state and state.session
+    if session and session.backend == "herdr" then
+      local ws = session.herdr_workspace_label
+      local tab = session.herdr_tab_label
+      if ws or tab then
+        local label = string.format("  ws=%s tab=%s", tostring(ws or "?"), tostring(tab or "?"))
+        ret[#ret + 1] = { label, "Comment" }
+      end
+    end
+    return ret
+  end
+  Select._herdr_patched = true
+end
+
 ---@param opts? sidekick_herdr.SetupOpts
 function M.setup(opts)
   M.opts = vim.tbl_deep_extend("force", M.opts, opts or {})
@@ -59,6 +84,7 @@ function M.setup(opts)
   end
   M._registered = true
   Session.register(M.opts.backend, require("sidekick_herdr.session"))
+  M._patch_select()
 end
 
 return M

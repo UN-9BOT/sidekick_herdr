@@ -1,6 +1,7 @@
 ---@class sidekick_herdr.Session: sidekick.cli.Session
 ---@field herdr_pane_id? string
 ---@field herdr_workspace_id? string
+---@field herdr_tab_id? string
 local M = {}
 M.__index = M
 M.priority = 50
@@ -13,13 +14,8 @@ end
 local function exec(cmd, opts)
   local Util = require("sidekick.util")
   opts = opts or {}
-  if vim.tbl_isempty(env()) then
-    return Util.exec(cmd, opts)
-  end
-  -- pass env to vim.system so HERDR_SOCKET_PATH / HERDR_* are honoured
   local merged = vim.tbl_extend("force", env(), opts.env or {})
   opts = vim.tbl_extend("force", { env = merged }, opts)
-  opts.env = merged
   return Util.exec(cmd, opts)
 end
 
@@ -56,7 +52,7 @@ function M:attach()
   return nil
 end
 
---- Resolve the freshly started pane id and workspace id.
+--- Resolve the freshly started pane id, workspace id, and tab id.
 ---@return boolean ok
 function M:resolve_pane()
   local decoded = json({ "herdr", "agent", "list" }, { notify = false })
@@ -68,6 +64,7 @@ function M:resolve_pane()
     if (a.agent or a.name) == self.tool.name and a.foreground_cwd == self.cwd then
       self.herdr_pane_id = a.pane_id
       self.herdr_workspace_id = a.workspace_id
+      self.herdr_tab_id = a.tab_id
       self.mux_session = self.sid
       self.started = true
       return true
@@ -109,6 +106,39 @@ function M:dump()
   return raw
 end
 
+---Fetch label maps for workspaces and tabs in the current herdr session.
+---Cached per-process to avoid extra CLI calls on each sessions() invocation.
+---@return table<string,string>, table<string,string>  workspace_id->label, tab_id->label
+local _ws_labels, _tab_labels
+local function label_maps()
+  if _ws_labels and _tab_labels then
+    return _ws_labels, _tab_labels
+  end
+  _ws_labels, _tab_labels = {}, {}
+
+  local ws_decoded = json({ "herdr", "workspace", "list" }, { notify = false })
+  if type(ws_decoded) == "table" then
+    local ws = (ws_decoded.result and ws_decoded.result.workspaces) or ws_decoded.workspaces or {}
+    for _, w in ipairs(ws) do
+      if w.workspace_id and w.label then
+        _ws_labels[w.workspace_id] = w.label
+      end
+    end
+  end
+
+  local tab_decoded = json({ "herdr", "tab", "list" }, { notify = false })
+  if type(tab_decoded) == "table" then
+    local tabs = (tab_decoded.result and tab_decoded.result.tabs) or tab_decoded.tabs or {}
+    for _, t in ipairs(tabs) do
+      if t.tab_id and t.label then
+        _tab_labels[t.tab_id] = t.label
+      end
+    end
+  end
+
+  return _ws_labels, _tab_labels
+end
+
 ---@return sidekick.cli.session.State[]
 function M.sessions()
   local Config = require("sidekick.config")
@@ -118,22 +148,43 @@ function M.sessions()
   end
   local agents = (decoded.result and decoded.result.agents) or decoded.agents or {}
   local tools = Config.tools()
+  local ws_labels, tab_labels = label_maps()
   local ret = {} ---@type sidekick.cli.session.State[]
   for _, a in ipairs(agents) do
     local name = a.agent or a.name
     local tool = tools[name]
     if tool then
       local cwd = a.foreground_cwd or a.cwd
-      ret[#ret + 1] = {
+      ---@type sidekick.cli.session.State
+      local state = {
         id = "herdr " .. a.pane_id,
         cwd = cwd,
         tool = tool,
+        backend = "herdr",
+        started = true,
         mux_session = a.workspace_id,
         pids = {},
+        -- herdr-specific labels surfaced in the UI
+        herdr_workspace_id = a.workspace_id,
+        herdr_workspace_label = a.workspace_id and ws_labels[a.workspace_id] or nil,
+        herdr_tab_id = a.tab_id,
+        herdr_tab_label = a.tab_id and tab_labels[a.tab_id] or nil,
       }
+      ret[#ret + 1] = state
     end
   end
   return ret
+end
+
+---Exposed for tests and for the UI extension: returns the in-memory label maps.
+---@return table<string,string>, table<string,string>
+function M.label_maps()
+  return label_maps()
+end
+
+---Reset the cached label maps. Useful for tests.
+function M._reset_label_cache()
+  _ws_labels, _tab_labels = nil, nil
 end
 
 return M
