@@ -13,19 +13,51 @@ coding agents — to that list, **without forking sidekick**.
 - [sidekick.nvim](https://github.com/folke/sidekick.nvim) — the plugin being extended
 - [herdr](https://herdr.dev) ≥ 0.6.9 — must be on `$PATH` (`herdr --version`)
 
-## Installation (lazy.nvim)
+## Installation
+
+### lazy.nvim
 
 ```lua
 {
-  "folke/sidekick.nvim", -- required
+  "folke/sidekick.nvim",
+  -- ...
 },
 {
-  dir = "/home/unbot/code/pets/sidekick_herdr_root/sidekick_herdr", -- local checkout
+  "UN-9BOT/sidekick_herdr",
   dependencies = { "folke/sidekick.nvim" },
   config = function()
     require("sidekick_herdr").setup({})
   end,
 }
+```
+
+### packer.nvim
+
+```lua
+use({
+  "folke/sidekick.nvim",
+  -- ...
+})
+use({
+  "UN-9BOT/sidekick_herdr",
+  requires = { "folke/sidekick.nvim" },
+  config = function()
+    require("sidekick_herdr").setup({})
+  end,
+})
+```
+
+### Manual (git clone)
+
+```bash
+git clone https://github.com/UN-9BOT/sidekick_herdr \
+  ~/.local/share/nvim/site/pack/vendor/start/sidekick_herdr
+```
+
+Then in your `init.lua`:
+
+```lua
+require("sidekick_herdr").setup({})
 ```
 
 `setup({})` is idempotent and safe to call multiple times. It:
@@ -39,17 +71,17 @@ coding agents — to that list, **without forking sidekick**.
 
 `require("sidekick_herdr").setup({ ... })` accepts:
 
-| key            | type     | default  | description                                                |
-| -------------- | -------- | -------- | ---------------------------------------------------------- |
-| `backend`      | `string` | `"herdr"`| name to register in `sidekick.cli.session.backends`        |
-| `binary`       | `string` | `"herdr"`| executable name to look for in `$PATH`                     |
-| `socket`       | `string?`| `nil`    | path to herdr's per-session API socket                     |
-| `config_path`  | `string?`| `nil`    | `HERDR_CONFIG_PATH` override (e.g. for nested-herdr tests) |
+| key            | type     | default   | description                                                |
+| -------------- | -------- | --------- | ---------------------------------------------------------- |
+| `backend`      | `string` | `"herdr"` | name to register in `sidekick.cli.session.backends`        |
+| `binary`       | `string` | `"herdr"` | executable name to look for in `$PATH`                     |
+| `socket`       | `string?`| `nil`     | path to herdr's per-session API socket                     |
+| `config_path`  | `string?`| `nil`     | `HERDR_CONFIG_PATH` override (e.g. for nested-herdr tests) |
 
-`socket` and `config_path` are forwarded as `HERDR_SOCKET_PATH` / `HERDR_CONFIG_PATH`
-to every `herdr` CLI invocation made by the backend. This scopes discovery and
-`pane send`/`pane read` calls to a single herdr session — important when the host
-has multiple herdr servers running.
+`socket` and `config_path` are forwarded as `HERDR_SOCKET_PATH` /
+`HERDR_CONFIG_PATH` to every `herdr` CLI invocation made by the backend. This
+scopes discovery and `pane send` / `pane read` calls to a single herdr session —
+important when the host has multiple herdr servers running.
 
 If unset, the backend falls back to whatever `HERDR_SOCKET_PATH` /
 `HERDR_CONFIG_PATH` is already in the environment.
@@ -90,16 +122,19 @@ herdr is the tool name (`tool.name`).
 
 ## Development
 
-Run the full test suite (unit + e2e):
+Clone the repo and run the full test suite (unit + e2e):
 
 ```bash
+git clone https://github.com/UN-9BOT/sidekick_herdr
+cd sidekick_herdr
 ./tests/run.sh
 ```
 
 Unit tests use `plenary.busted` and stub `sidekick.util.exec`. No live herdr
 required; they always run.
 
-E2E tests are bash scripts that follow the pattern from `herdr-neolazygit/tests/`:
+E2E tests are bash scripts that follow the pattern from
+`herdr-neolazygit/tests/`:
 
 - each test gets a unique herdr session (`shk-<pid>-<rand>`),
 - sessions are started with `setsid herdr --session <name> &
@@ -108,13 +143,14 @@ E2E tests are bash scripts that follow the pattern from `herdr-neolazygit/tests/
   `herdr session stop` + `herdr session delete` + `rm -rf` on the session dir,
 - so the host's `default` herdr session is never touched.
 
-If `herdr --version` succeeds, e2e tests auto-run. Force them with `HERDR_E2E=1
-./tests/run.sh` or skip them with `HERDR_E2E=0`.
+If `herdr --version` succeeds, e2e tests auto-run. Force them with
+`HERDR_E2E=1 ./tests/run.sh` or skip them with `HERDR_E2E=0`.
 
 ## File layout
 
 ```
 sidekick_herdr/
+├── LICENSE
 ├── README.md
 ├── plugin/sidekick_herdr.lua            # :SidekickHerdr command
 ├── lua/sidekick_herdr/init.lua          # setup({...})
@@ -128,3 +164,7 @@ sidekick_herdr/
     ├── test-send-dump.bash              # e2e: Backend.send() + dump() roundtrip
     └── spec/session_spec.lua            # 15 unit tests (plenary.busted)
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
