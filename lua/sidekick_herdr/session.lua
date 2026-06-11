@@ -34,10 +34,33 @@ end
 
 ---@return sidekick.cli.terminal.Cmd?
 function M:start()
-  -- herdr agent start writes a JSON status line to stdout, which would land
-  -- in sidekick's terminal buffer as visible garbage. Wrap the call in
-  -- `sh -c` and redirect stdout+stderr to /dev/null so the terminal only
-  -- ever shows the tool's own output.
+  -- We do NOT return a Cmd here. Returning a Cmd would make sidekick wrap
+  -- the call in a `jobstart({term=true})` terminal buffer; instead we want
+  -- the tool to live in a real herdr pane from the start, and have
+  -- `M:send` / `M:submit` route text into that pane via `herdr pane send-text`.
+  -- Returning nil makes `Session.attach` skip the terminal wrapper and
+  -- mark `self` as the attached session directly.
+  --
+  -- However, the agent has to actually exist in herdr first. Invoke
+  -- `herdr agent start` synchronously (it returns once the pane is up)
+  -- and then resolve the pane id so subsequent `send`/`submit` calls work.
+  self:_spawn_agent()
+  return nil
+end
+
+---@return sidekick.cli.terminal.Cmd?
+function M:attach()
+  -- Already started: nothing to do. Returning nil keeps sidekick from
+  -- opening a second terminal window.
+  return nil
+end
+
+---Run `herdr agent start` for this session's tool synchronously. No-op
+---when the pane is already known.
+function M:_spawn_agent()
+  if self.herdr_pane_id and self.herdr_pane_id ~= "" then
+    return
+  end
   local args = { "herdr", "agent", "start", self.tool.name, "--cwd", self.cwd, "--no-focus", "--" }
   for _, c in ipairs(self.tool.cmd) do
     args[#args + 1] = c
@@ -46,18 +69,25 @@ function M:start()
   for _, a in ipairs(args) do
     quoted[#quoted + 1] = vim.fn.shellescape(a)
   end
-  return {
-    cmd = { "sh", "-c", table.concat(quoted, " ") .. " >/dev/null 2>&1" },
-    env = vim.tbl_extend("force", {
-      HERDR = false,
-      HERDR_CONFIG_PATH = false,
-    }, env()),
-  }
-end
-
----@return sidekick.cli.terminal.Cmd?
-function M:attach()
-  return nil
+  local merged_env = vim.tbl_extend("force", env(), {
+    HERDR = false,
+    HERDR_CONFIG_PATH = false,
+  })
+  -- Block until herdr has created the pane. `herdr agent start` returns
+  -- only after the pane is registered, so the very next `herdr agent list`
+  -- call should find it.
+  local cmd = { "sh", "-c", table.concat(quoted, " ") .. " >/dev/null 2>&1" }
+  local result = vim.system(cmd, { env = merged_env, text = true }):wait()
+  if result.code ~= 0 then
+    local ok, Util = pcall(require, "sidekick.util")
+    if ok then
+      local err = (result.stderr or ""):gsub("\\n", " ")
+      Util.error(("sidekick_herdr: herdr agent start failed (code=%d): %s"):format(result.code, err))
+    end
+    return
+  end
+  self.started = true
+  self:_ensure_pane_resolved(10, 100)
 end
 
 --- Resolve the freshly started pane id, workspace id, and tab id.
