@@ -89,21 +89,33 @@ function M:is_running()
   return lines ~= nil
 end
 
-function M:_guard_pane(op)
-  if not self.herdr_pane_id or self.herdr_pane_id == "" then
-    local ok, Util = pcall(require, "sidekick.util")
-    if ok then
-      Util.warn(("sidekick_herdr: %s called before herdr_pane_id is known; " ..
-        "the session was never started or the pane disappeared. " ..
-        "Run SidekickCliAttach/Start to (re)attach."):format(op))
-    end
-    return false
+---@param max_attempts? integer
+---@param delay_ms? integer
+---@return boolean ok
+function M:_ensure_pane_resolved(max_attempts, delay_ms)
+  if self.herdr_pane_id and self.herdr_pane_id ~= "" then
+    return true
   end
-  return true
+  max_attempts = max_attempts or 5
+  delay_ms = delay_ms or 200
+  for _ = 1, max_attempts do
+    if self:resolve_pane() then
+      return true
+    end
+    vim.wait(delay_ms, function() return false end)
+  end
+  return false
 end
 
 function M:send(text)
-  if not self:_guard_pane("send") then return end
+  if not self:_ensure_pane_resolved() then
+    local ok, Util = pcall(require, "sidekick.util")
+    if ok then
+      Util.warn(("sidekick_herdr: cannot send — no herdr pane found for tool `%s` in cwd `%s`. " ..
+        "Is `herdr agent list` showing it? If you just attached, give herdr a moment to register the pane."):format(self.tool.name, self.cwd))
+    end
+    return
+  end
   local function send()
     exec({ "herdr", "pane", "send-text", self.herdr_pane_id, text }, { notify = true })
   end
@@ -116,7 +128,13 @@ function M:send(text)
 end
 
 function M:submit()
-  if not self:_guard_pane("submit") then return end
+  if not self:_ensure_pane_resolved() then
+    local ok, Util = pcall(require, "sidekick.util")
+    if ok then
+      Util.warn("sidekick_herdr: cannot submit — no herdr pane resolved.")
+    end
+    return
+  end
   exec({ "herdr", "pane", "send-keys", self.herdr_pane_id, "Enter" }, { notify = true })
 end
 

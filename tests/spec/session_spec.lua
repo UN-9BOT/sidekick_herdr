@@ -182,14 +182,20 @@ describe("sidekick_herdr.session.submit", function()
     assert.are.same({ "herdr", "pane", "send-keys", "p1", "Enter" }, calls[1].cmd)
   end)
 
-  it("does not invoke herdr pane send-keys when herdr_pane_id is missing", function()
-    local calls = {}
-    local orig_exec = Util.exec
-    Util.exec = function(cmd, opts) calls[#calls + 1] = cmd end
+  it("auto-resolves the pane id by polling herdr agent list, then submits", function()
+    -- Stub resolve_pane to populate the pane id on the first call.
+    -- The stub_exec in before_each returns {} -> resolve_pane would normally
+    -- keep polling until it gives up; we shortcut that by overriding
+    -- resolve_pane on this session.
     local s = make_session({ sid = "claude 1" })
+    s.cwd = "/tmp/proj"
+    s.resolve_pane = function(self)
+      self.herdr_pane_id = "w999-1"
+      return true
+    end
     s:submit()
-    Util.exec = orig_exec
-    assert.are.equal(0, #calls, "herdr pane send-keys must not be called without pane id")
+    assert.are.equal(1, #calls, "expected exactly one herdr CLI call")
+    assert.are.same({ "herdr", "pane", "send-keys", "w999-1", "Enter" }, calls[1].cmd)
   end)
 end)
 
